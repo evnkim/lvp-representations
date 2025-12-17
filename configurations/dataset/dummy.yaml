@@ -1,0 +1,7 @@
+defaults:
+  - video_base
+  - _self_
+
+load_video_latent: false
+load_prompt_embed: true
+image_to_video: true

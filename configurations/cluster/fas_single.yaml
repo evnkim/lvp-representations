@@ -1,0 +1,7 @@
+defaults:
+  - fas_low
+  - _self_
+params:
+  num_gpus: 1
+  num_cpus: 16
+  memory: 64G

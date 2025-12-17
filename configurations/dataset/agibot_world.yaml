@@ -1,0 +1,11 @@
+defaults:
+  - video_base
+  - _self_
+
+data_root: data/agibot_beta_temp
+metadata_path: merged_metadata.csv
+
+filtering: # filter raw videos based on these criteria
+  n_frames: [60, 360] # number of frames range for the videos
+
+fps_override: 60

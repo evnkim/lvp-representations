@@ -1,0 +1,25 @@
+defaults:
+  - video_base
+  # - droid@subset/droid
+  # - bridge@subset/bridge
+  - agibot_world@subset/agibot_world
+  - _self_
+
+data_root: null
+metadata_path: null
+load_prompt_embed: true
+load_video_latent: false
+fps: 16
+
+training:
+  weight_type: relative # relative weight consider the original size of the dataset, absolute weight doesn't 
+  weight:
+    # droid: 1.0
+    # bridge: 2.0
+    agibot_world: 2.0
+validation:
+  weight_type: absolute # relative weight consider the original size of the dataset, absolute weight doesn't 
+  weight:
+    # droid: 1.0
+    # bridge: 1.0
+    agibot_world: 1.0

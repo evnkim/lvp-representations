@@ -1,0 +1,10 @@
+defaults:
+  - openx_base
+  - _self_
+data_root: data/openx_embodiment/berkeley_cable_routing
+metadata_path: metadata.csv
+
+download:
+  openx_name: berkeley_cable_routing
+  openx_fps: 60 # TODO: change this according to visualization
+  views: ["wrist45_image"]

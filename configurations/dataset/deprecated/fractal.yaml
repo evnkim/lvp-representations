@@ -1,0 +1,10 @@
+defaults:
+  - openx_base
+  - _self_
+data_root: data/openx_embodiment/fractal20220817_data
+metadata_path: metadata.csv
+
+download:
+  openx_name: fractal20220817_data 
+  openx_fps: 60 # TODO: change this according to visualization
+  views: ["image"]

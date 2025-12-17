@@ -1,0 +1,6 @@
+defaults:
+  - video_base
+  - _self_
+
+data_root: data/1x_world_model
+metadata_path: metadata.csv
