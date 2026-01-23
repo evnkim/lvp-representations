@@ -21,7 +21,7 @@ pyyaml==6.0.2
 # Experiment Tracking
 wandb==0.19.1
 wandb-osh==1.2.2
-tensorboard==2.19.0
+tensorboard==2.15.0
 
 # Media Processing
 opencv-python==4.9.0.80
