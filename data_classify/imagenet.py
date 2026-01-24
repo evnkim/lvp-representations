@@ -171,7 +171,7 @@ class ImageNetSubset(BaseRealDataset):
         self.std = torch.tensor(std, device="cuda").reshape(1, 3, 1, 1)
 
         self.full_ds = torchvision.datasets.ImageNet(
-            root=f"{data_root}/imagenet", split=split, transform=self.transform
+            root=f"{data_root}", split=split, transform=self.transform
         )
 
         mask = torch.isin(torch.tensor(self.full_ds.targets), torch.tensor(self.classes))

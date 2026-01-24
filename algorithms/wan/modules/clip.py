@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as T
 
-from .attention import flash_attention
+from .attention import attention
 from .tokenizers import HuggingfaceTokenizer
 from .xlm_roberta import XLMRoberta
 
@@ -30,10 +30,7 @@ def pos_interpolate(pos, seq_len):
             [
                 pos[:, :n],
                 F.interpolate(
-                    pos[:, n:]
-                    .float()
-                    .reshape(1, src_grid, src_grid, -1)
-                    .permute(0, 3, 1, 2),
+                    pos[:, n:].float().reshape(1, src_grid, src_grid, -1).permute(0, 3, 1, 2),
                     size=(tar_grid, tar_grid),
                     mode="bicubic",
                     align_corners=False,
@@ -59,9 +56,7 @@ class LayerNorm(nn.LayerNorm):
 
 class SelfAttention(nn.Module):
 
-    def __init__(
-        self, dim, num_heads, causal=False, attn_dropout=0.0, proj_dropout=0.0
-    ):
+    def __init__(self, dim, num_heads, causal=False, attn_dropout=0.0, proj_dropout=0.0):
         assert dim % num_heads == 0
         super().__init__()
         self.dim = dim
@@ -86,7 +81,7 @@ class SelfAttention(nn.Module):
 
         # compute attention
         p = self.attn_dropout if self.training else 0.0
-        x = flash_attention(q, k, v, dropout_p=p, causal=self.causal, version=2)
+        x = attention(q, k, v, dropout_p=p, causal=self.causal, version=2)
         x = x.reshape(b, s, c)
 
         # output
@@ -205,7 +200,7 @@ class AttentionPool(nn.Module):
         k, v = self.to_kv(x).view(b, s, 2, n, d).unbind(2)
 
         # compute attention
-        x = flash_attention(q, k, v, version=2)
+        x = attention(q, k, v, version=2)
         x = x.reshape(b, 1, c)
 
         # output
@@ -297,9 +292,7 @@ class VisionTransformer(nn.Module):
         elif pool_type == "token_fc":
             self.head = nn.Linear(dim, out_dim)
         elif pool_type == "attn_pool":
-            self.head = AttentionPool(
-                dim, mlp_ratio, num_heads, activation, proj_dropout, norm_eps
-            )
+            self.head = AttentionPool(dim, mlp_ratio, num_heads, activation, proj_dropout, norm_eps)
 
     def forward(self, x, interpolation=False, use_31_block=False):
         b = x.size(0)
@@ -454,17 +447,13 @@ class XLMRobertaCLIP(nn.Module):
         groups = [
             {
                 "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if "norm" in n or n.endswith("bias")
+                    p for n, p in self.named_parameters() if "norm" in n or n.endswith("bias")
                 ],
                 "weight_decay": 0.0,
             },
             {
                 "params": [
-                    p
-                    for n, p in self.named_parameters()
-                    if not ("norm" in n or n.endswith("bias"))
+                    p for n, p in self.named_parameters() if not ("norm" in n or n.endswith("bias"))
                 ]
             },
         ]
@@ -578,9 +567,7 @@ class CLIPModel:
         size = (self.model.image_size,) * 2
         videos = torch.cat(
             [
-                F.interpolate(
-                    u.transpose(0, 1), size=size, mode="bicubic", align_corners=False
-                )
+                F.interpolate(u.transpose(0, 1), size=size, mode="bicubic", align_corners=False)
                 for u in videos
             ]
         )

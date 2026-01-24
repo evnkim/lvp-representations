@@ -9,7 +9,7 @@ from torch.utils.checkpoint import checkpoint
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 from functools import partial
-from .attention import flash_attention
+from .attention import flash_attention, attention
 
 __all__ = ["WanModel", "WanAttentionBlock"]
 
@@ -21,9 +21,7 @@ def sinusoidal_embedding_1d(dim, position):
     position = position.type(torch.float64)
 
     # calculation
-    sinusoid = torch.outer(
-        position, torch.pow(10000, -torch.arange(half).to(position).div(half))
-    )
+    sinusoid = torch.outer(position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x
 
@@ -52,9 +50,7 @@ def rope_apply(x, grid_sizes, freqs):
         seq_len = f * h * w
 
         # precompute multipliers
-        x_i = torch.view_as_complex(
-            x[i, :seq_len].to(torch.float64).reshape(seq_len, n, -1, 2)
-        )
+        x_i = torch.view_as_complex(x[i, :seq_len].to(torch.float64).reshape(seq_len, n, -1, 2))
         freqs_i = torch.cat(
             [
                 freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
@@ -144,7 +140,7 @@ class WanSelfAttention(nn.Module):
 
         q, k, v = qkv_fn(x)
 
-        x = flash_attention(
+        x = attention(
             q=rope_apply(q, grid_sizes, freqs),
             k=rope_apply(k, grid_sizes, freqs),
             v=v,
@@ -175,7 +171,7 @@ class WanT2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
 
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -210,9 +206,9 @@ class WanI2VCrossAttention(WanSelfAttention):
         v = self.v(context).view(b, -1, n, d)
         k_img = self.norm_k_img(self.k_img(context_img)).view(b, -1, n, d)
         v_img = self.v_img(context_img).view(b, -1, n, d)
-        img_x = flash_attention(q, k_img, v_img, k_lens=None)
+        img_x = attention(q, k_img, v_img, k_lens=None)
         # compute attention
-        x = flash_attention(q, k, v, k_lens=context_lens)
+        x = attention(q, k, v, k_lens=context_lens)
 
         # output
         x = x.flatten(2)
@@ -254,9 +250,7 @@ class WanAttentionBlock(nn.Module):
         self.norm1 = WanLayerNorm(dim, eps)
         self.self_attn = WanSelfAttention(dim, num_heads, window_size, qk_norm, eps)
         self.norm3 = (
-            WanLayerNorm(dim, eps, elementwise_affine=True)
-            if cross_attn_norm
-            else nn.Identity()
+            WanLayerNorm(dim, eps, elementwise_affine=True) if cross_attn_norm else nn.Identity()
         )
         self.cross_attn = WAN_CROSSATTENTION_CLASSES[cross_attn_type](
             dim, num_heads, (-1, -1), qk_norm, eps
@@ -297,9 +291,7 @@ class WanAttentionBlock(nn.Module):
         # assert e[0].dtype == torch.float32
 
         # self-attention
-        y = self.self_attn(
-            self.norm1(x) * (1 + e[1]) + e[0], seq_lens, grid_sizes, freqs
-        )
+        y = self.self_attn(self.norm1(x) * (1 + e[1]) + e[0], seq_lens, grid_sizes, freqs)
         # with amp.autocast("cuda", dtype=torch.float32):
         x = x + y * e[2]
 
@@ -458,9 +450,7 @@ class WanModel(ModelMixin, ConfigMixin):
         self.gradient_checkpointing_indices = []
 
         # embeddings
-        self.patch_embedding = nn.Conv3d(
-            in_dim, dim, kernel_size=patch_size, stride=patch_size
-        )
+        self.patch_embedding = nn.Conv3d(in_dim, dim, kernel_size=patch_size, stride=patch_size)
         self.text_embedding = nn.Sequential(
             nn.Linear(text_dim, dim), nn.GELU(approximate="tanh"), nn.Linear(dim, dim)
         )
@@ -569,25 +559,18 @@ class WanModel(ModelMixin, ConfigMixin):
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
-        grid_sizes = torch.stack(
-            [torch.tensor(u.shape[2:], dtype=torch.long) for u in x]
-        )
+        grid_sizes = torch.stack([torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
         x = [u.flatten(2).transpose(1, 2) for u in x]
         seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
         assert seq_lens.max() <= seq_len
         x = torch.cat(
-            [
-                torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1)
-                for u in x
-            ]
+            [torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))], dim=1) for u in x]
         )
 
         # time embeddings
         # with amp.autocast("cuda", dtype=torch.float32):
         t_shape = tuple(t.shape)
-        e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, t.flatten()).type_as(x)
-        )
+        e = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, t.flatten()).type_as(x))
         if t.ndim == 2:
             e = e.unflatten(dim=0, sizes=t_shape)
         else:
@@ -599,10 +582,7 @@ class WanModel(ModelMixin, ConfigMixin):
         context_lens = None
         context = self.text_embedding(
             torch.stack(
-                [
-                    torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                    for u in context
-                ]
+                [torch.cat([u, u.new_zeros(self.text_len - u.size(0), u.size(1))]) for u in context]
             )
         )
 

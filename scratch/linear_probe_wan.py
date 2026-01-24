@@ -1,8 +1,7 @@
 """
 Minimal WAN linear probing scaffold for ImageNet-style classification.
 
-This is intentionally incomplete: data loading, VAE encode, and text context
-construction are left as TODOs to wire into your local setup.
+Provide VAE and text encoder checkpoints via CLI flags.
 """
 
 import argparse
@@ -15,6 +14,55 @@ from torch.utils.data import DataLoader
 # Repo-local imports
 from algorithms.wan.modules.model import WanModel
 from data_classify.imagenet import ImageNetSubset
+from scratch.linear_probe_utils import (
+    TextConfig,
+    VaeConfig,
+    build_timesteps,
+    compute_seq_len,
+    encode_images_to_wan_latents,
+    encode_texts,
+    setup_text_encoder,
+    setup_vae,
+)
+from scratch.wandb_utils import WandbConfig, init_wandb, log_wandb
+
+
+DEFAULT_VAE_MEAN = [
+    -0.7571,
+    -0.7089,
+    -0.9113,
+    0.1075,
+    -0.1745,
+    0.9653,
+    -0.1517,
+    1.5508,
+    0.4134,
+    -0.0715,
+    0.5517,
+    -0.3632,
+    -0.1922,
+    -0.9497,
+    0.2503,
+    -0.2921,
+]
+DEFAULT_VAE_STD = [
+    2.8184,
+    1.4541,
+    2.3275,
+    2.6558,
+    1.2196,
+    1.7708,
+    2.6052,
+    2.0743,
+    3.2687,
+    2.1526,
+    2.8652,
+    1.5579,
+    1.6382,
+    1.1253,
+    2.8251,
+    1.9160,
+]
 
 
 @dataclass
@@ -22,6 +70,10 @@ class ProbeConfig:
     ckpt_path: str
     layer_idx: int
     use_mlp: bool
+    tuned_ckpt_path: str | None = None
+    pipeline_test: bool = False
+    tiny_model: bool = False
+    use_random_inputs: bool = False
     num_classes: int = 1000
     pool: str = "mean"  # "mean" or "max"
     device: str = "cuda"
@@ -29,8 +81,21 @@ class ProbeConfig:
     num_workers: int = 8
     subset_name: str = "imagenet-1k"
     data_root: str = "data/datasets"
+    patch_size: tuple[int, int, int] = (1, 2, 2)
+    t_value: float = 500.0
+    text_prompt: str = "a photo"
+    text_encoder_name: str = "google/umt5-xxl"
+    text_len: int = 512
+    text_ckpt_path: str | None = None
+    text_device: str = "cpu"
+    vae_ckpt_path: str | None = None
+    vae_z_dim: int = 16
+    vae_mean: list[float] | None = None
+    vae_std: list[float] | None = None
+    wandb: WandbConfig | None = None
     lr: float = 1e-3
     epochs: int = 10
+    log_every: int = 50
 
 
 class WanFeatureModel(nn.Module):
@@ -84,9 +149,7 @@ class LinearProbe(nn.Module):
 
 def build_dataloaders(cfg: ProbeConfig):
     """
-    TODO:
-    - build ImageNet train/val DataLoader
-    - produce raw images (B, 3, H, W) and labels
+    Build ImageNet train/val loaders using ImageNetSubset.
     """
     train_ds = ImageNetSubset(
         split="train",
@@ -123,36 +186,49 @@ def build_dataloaders(cfg: ProbeConfig):
     return train_loader, val_loader, test_loader
 
 
-@torch.no_grad()
-def encode_images_to_wan_latents(vae, images, vae_mean, vae_inv_std):
-    """
-    TODO:
-    - WAN expects x as list of tensors [C_in, F, H, W] per sample
-    - For ImageNet, F=1 frame
-    - Use VAE encoder to get z, then normalize with mean/std
-    """
-    raise NotImplementedError
-
-
-@torch.no_grad()
-def make_context(text_encoder, tokenizer, texts, device):
-    """
-    TODO:
-    - Use WAN's text encoder + tokenizer to produce text embeddings
-    - WAN expects `context` as List[Tensor], each [L, C]
-    - Keep prompt fixed, e.g. "a photo"
-    """
-    raise NotImplementedError
-
-
 def compute_top1_accuracy(logits, labels):
     preds = logits.argmax(dim=1)
     correct = (preds == labels).sum().item()
     return correct, labels.numel()
 
 
+def build_random_inputs(
+    batch_size,
+    in_dim,
+    text_dim,
+    text_len,
+    height,
+    width,
+    device,
+    dtype,
+):
+    video_lat = torch.randn(batch_size, in_dim, 1, height, width, device=device, dtype=dtype)
+    context = [
+        torch.randn(text_len, text_dim, device=device, dtype=dtype) for _ in range(batch_size)
+    ]
+    return video_lat, context, video_lat
+
+
 @torch.no_grad()
-def evaluate(feature_model, probe, data_loader, device):
+def evaluate(
+    feature_model,
+    probe,
+    data_loader,
+    device,
+    text_encoder,
+    tokenizer,
+    text_device,
+    vae,
+    vae_scale,
+    patch_size,
+    t_value,
+    text_prompt,
+    dtype,
+    use_random_inputs,
+    in_dim,
+    text_dim,
+    text_len,
+):
     feature_model.eval()
     probe.eval()
 
@@ -160,21 +236,38 @@ def evaluate(feature_model, probe, data_loader, device):
     total_count = 0
 
     for images, labels in data_loader:
-        # TODO: move to device and create WAN inputs.
-        # images = images.to(device, non_blocking=True)
-        # labels = labels.to(device, non_blocking=True)
-        #
-        # x = encode_images_to_wan_latents(...)
-        # context = make_context(...)
-        # t = ...
-        # seq_len = ...
-        # feats = feature_model(x, t, context, seq_len)
-        # logits = probe(feats)
-        #
-        # correct, count = compute_top1_accuracy(logits, labels)
-        # total_correct += correct
-        # total_count += count
-        pass
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        if use_random_inputs:
+            x, context, video_lat = build_random_inputs(
+                images.size(0),
+                in_dim,
+                text_dim,
+                text_len,
+                images.shape[2],
+                images.shape[3],
+                device,
+                dtype,
+            )
+        else:
+            video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
+            x = video_lat
+            context = encode_texts(
+                text_encoder,
+                tokenizer,
+                [text_prompt] * images.size(0),
+                text_device,
+                out_device=device,
+            )
+        t = build_timesteps(images.size(0), t_value, device)
+        seq_len = compute_seq_len(video_lat, patch_size)
+        feats = feature_model(x, t, context, seq_len)
+        logits = probe(feats)
+
+        correct, count = compute_top1_accuracy(logits, labels)
+        total_correct += correct
+        total_count += count
 
     acc = 100.0 * total_correct / max(total_count, 1)
     return acc
@@ -189,96 +282,328 @@ def train_linear(
     scheduler,
     device,
     epochs,
+    text_encoder,
+    tokenizer,
+    text_device,
+    vae,
+    vae_scale,
+    patch_size,
+    t_value,
+    text_prompt,
+    dtype,
+    wandb_run,
+    log_every,
+    use_random_inputs,
+    in_dim,
+    text_dim,
+    text_len,
 ):
     criterion = nn.CrossEntropyLoss()
     feature_model.eval()
     probe.train()
 
     best_val = 0.0
+    global_step = 0
     for epoch in range(epochs):
+        running_loss = 0.0
+        running_count = 0
         for images, labels in train_loader:
-            # TODO: move to device and create WAN inputs.
-            # images = images.to(device, non_blocking=True)
-            # labels = labels.to(device, non_blocking=True)
-            #
-            # x = encode_images_to_wan_latents(...)
-            # context = make_context(...)
-            # t = ...
-            # seq_len = ...
-            # feats = feature_model(x, t, context, seq_len)
-            # logits = probe(feats)
-            #
-            # loss = criterion(logits, labels)
-            # optimizer.zero_grad(set_to_none=True)
-            # loss.backward()
-            # optimizer.step()
-            pass
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+
+        if use_random_inputs:
+            x, context, video_lat = build_random_inputs(
+                images.size(0),
+                in_dim,
+                text_dim,
+                    text_len,
+                    images.shape[2],
+                    images.shape[3],
+                    device,
+                dtype,
+            )
+        else:
+            video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
+            x = video_lat
+            context = encode_texts(
+                text_encoder,
+                tokenizer,
+                [text_prompt] * images.size(0),
+                    text_device,
+                    out_device=device,
+                )
+            t = build_timesteps(images.size(0), t_value, device)
+            seq_len = compute_seq_len(video_lat, patch_size)
+            with torch.no_grad():
+                feats = feature_model(x, t, context, seq_len)
+            feats = feats.detach()
+            logits = probe(feats)
+
+            loss = criterion(logits, labels)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * labels.size(0)
+            running_count += labels.size(0)
+            if log_every > 0 and (global_step % log_every) == 0:
+                log_wandb(
+                    wandb_run,
+                    {
+                        "train/step_loss": loss.item(),
+                        "lr": optimizer.param_groups[0]["lr"],
+                        "step": global_step,
+                    },
+                    step=global_step,
+                )
+            global_step += 1
 
         scheduler.step()
-        val_acc = evaluate(feature_model, probe, val_loader, device)
+        train_loss = running_loss / max(running_count, 1)
+        val_acc = evaluate(
+            feature_model,
+            probe,
+            val_loader,
+            device,
+            text_encoder,
+            tokenizer,
+            text_device,
+            vae,
+            vae_scale,
+            patch_size,
+            t_value,
+            text_prompt,
+            dtype,
+            use_random_inputs,
+            in_dim,
+            text_dim,
+            text_len,
+        )
         best_val = max(best_val, val_acc)
         print(f"epoch {epoch}: val_top1={val_acc:.2f} best={best_val:.2f}")
+        log_wandb(
+        wandb_run,
+            {
+                "train/loss": train_loss,
+                "val/top1": val_acc,
+                "lr": optimizer.param_groups[0]["lr"],
+                "epoch": epoch,
+            },
+            step=epoch,
+        )
 
     return best_val
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt-path", type=str, required=True)
-    parser.add_argument("--layer-idx", type=int, default=12)
+    parser.add_argument("--ckpt-path", type=str, default="")
+    parser.add_argument("--tuned-ckpt-path", type=str, default=None)
+    parser.add_argument("--pipeline-test", action="store_true")
+    parser.add_argument("--tiny-model", action="store_true")
+    parser.add_argument("--random-inputs", action="store_true")
+    parser.add_argument("--layer-idx", type=int, default=1)
     parser.add_argument("--use-mlp", action="store_true")
     parser.add_argument("--subset-name", type=str, default="imagenet-1k")
-    parser.add_argument("--data-root", type=str, default="data/datasets")
+    parser.add_argument("--data-root", type=str, default="/data/scene-rep/ImageNet1K")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--patch-size", type=int, nargs=3, default=[1, 2, 2])
+    parser.add_argument("--t-value", type=float, default=500.0)
+    parser.add_argument("--text-prompt", type=str, default="a photo")
+    parser.add_argument("--text-encoder-name", type=str, default="google/umt5-xxl")
+    parser.add_argument("--text-len", type=int, default=512)
+    parser.add_argument("--text-ckpt-path", type=str, default=None)
+    parser.add_argument("--text-device", type=str, default="cpu")
+    parser.add_argument("--vae-ckpt-path", type=str, default=None)
+    parser.add_argument("--vae-z-dim", type=int, default=16)
+    parser.add_argument("--vae-mean", type=float, nargs="*", default=None)
+    parser.add_argument("--vae-std", type=float, nargs="*", default=None)
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--wandb-project", type=str, default="lvp-representation")
+    parser.add_argument(
+        "--wandb-entity", type=str, default="evnkim-massachusetts-institute-of-technology-org"
+    )
+    parser.add_argument("--wandb-name", type=str, default="wan-linear-probe")
+    parser.add_argument("--wandb-mode", type=str, default="online")
+    parser.add_argument("--log-every", type=int, default=50)
     args = parser.parse_args()
 
     cfg = ProbeConfig(
         ckpt_path=args.ckpt_path,
+        tuned_ckpt_path=args.tuned_ckpt_path,
+        pipeline_test=args.pipeline_test,
+        tiny_model=args.tiny_model,
+        use_random_inputs=args.random_inputs,
         layer_idx=args.layer_idx,
         use_mlp=args.use_mlp,
         subset_name=args.subset_name,
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        patch_size=tuple(args.patch_size),
+        t_value=args.t_value,
+        text_prompt=args.text_prompt,
+        text_encoder_name=args.text_encoder_name,
+        text_len=args.text_len,
+        text_ckpt_path=args.text_ckpt_path,
+        text_device=args.text_device,
+        vae_ckpt_path=args.vae_ckpt_path,
+        vae_z_dim=args.vae_z_dim,
+        vae_mean=args.vae_mean,
+        vae_std=args.vae_std,
+        wandb=WandbConfig(
+            enabled=args.wandb,
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_name,
+            mode=args.wandb_mode,
+        ),
+        log_every=args.log_every,
     )
 
-    wan = WanModel.from_pretrained(cfg.ckpt_path).eval().to(cfg.device)
+    if cfg.pipeline_test:
+        cfg.tiny_model = True
+        cfg.use_random_inputs = True
+
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
+    if cfg.tiny_model:
+        wan = WanModel(
+            model_type="t2v",
+            patch_size=cfg.patch_size,
+            text_len=cfg.text_len,
+            in_dim=8,
+            dim=256,
+            ffn_dim=512,
+            freq_dim=64,
+            text_dim=128,
+            out_dim=8,
+            num_heads=4,
+            num_layers=2,
+            window_size=(-1, -1),
+            qk_norm=True,
+            cross_attn_norm=True,
+            eps=1e-6,
+        )
+    elif cfg.tuned_ckpt_path:
+        if not cfg.ckpt_path:
+            raise ValueError("Please provide --ckpt-path for tuned checkpoint loading.")
+        wan = WanModel.from_config(WanModel._dict_from_json_file(cfg.ckpt_path + "/config.json"))
+        ckpt = torch.load(cfg.tuned_ckpt_path, map_location="cpu", weights_only=True)
+        state_dict = {
+            k[len("model.") :]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")
+        }
+        wan.load_state_dict(state_dict, assign=True)
+    else:
+        if not cfg.ckpt_path:
+            raise ValueError("Please provide --ckpt-path (or use --tiny-model/--pipeline-test).")
+        wan = WanModel.from_pretrained(cfg.ckpt_path)
+    wan = wan.eval().to(cfg.device, dtype=dtype)
 
     for p in wan.parameters():
         p.requires_grad_(False)
 
-    feature_model = WanFeatureModel(wan, layer_idx=cfg.layer_idx, pool=cfg.pool).to(
-        cfg.device
-    )
+    feature_model = WanFeatureModel(wan, layer_idx=cfg.layer_idx, pool=cfg.pool).to(cfg.device)
 
-    # TODO: build loaders, VAE/text encoder setup, and run training loop.
     train_loader, val_loader, test_loader = build_dataloaders(cfg)
+    cfg.num_classes = train_loader.dataset.num_classes
+    text_encoder = None
+    tokenizer = None
+    vae = None
+    vae_scale = None
+
+    if not cfg.use_random_inputs:
+        if cfg.vae_ckpt_path is None:
+            raise ValueError("Please provide --vae-ckpt-path")
+        if cfg.vae_mean is None:
+            cfg.vae_mean = DEFAULT_VAE_MEAN
+        if cfg.vae_std is None:
+            cfg.vae_std = DEFAULT_VAE_STD
+
+        text_dtype = torch.float32 if cfg.text_device == "cpu" else dtype
+        text_cfg = TextConfig(
+            name=cfg.text_encoder_name,
+            text_len=cfg.text_len,
+            ckpt_path=cfg.text_ckpt_path,
+            device=cfg.text_device,
+        )
+        vae_cfg = VaeConfig(
+            ckpt_path=cfg.vae_ckpt_path,
+            z_dim=cfg.vae_z_dim,
+            mean=cfg.vae_mean,
+            std=cfg.vae_std,
+            device=cfg.device,
+        )
+        text_encoder, tokenizer = setup_text_encoder(text_cfg, dtype=text_dtype)
+        vae, vae_scale = setup_vae(vae_cfg, dtype=dtype)
 
     # NOTE: in_dim should be verified by running a real forward pass.
     in_dim = wan.dim
-    probe = LinearProbe(in_dim, cfg.num_classes, use_mlp=cfg.use_mlp).to(cfg.device)
+    probe = LinearProbe(in_dim, cfg.num_classes, use_mlp=cfg.use_mlp).to(
+        cfg.device, dtype=dtype
+    )
     optimizer = torch.optim.SGD(probe.parameters(), lr=cfg.lr, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg.epochs, eta_min=0.0
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=0.0)
+
+    wandb_run = init_wandb(
+        cfg.wandb,
+        {
+            "ckpt_path": cfg.ckpt_path,
+            "layer_idx": cfg.layer_idx,
+            "subset_name": cfg.subset_name,
+            "batch_size": cfg.batch_size,
+            "t_value": cfg.t_value,
+            "text_prompt": cfg.text_prompt,
+        },
     )
 
-    # TODO: plug real loaders
-    # best_val = train_linear(
-    #     feature_model,
-    #     probe,
-    #     train_loader,
-    #     val_loader,
-    #     optimizer,
-    #     scheduler,
-    #     cfg.device,
-    #     cfg.epochs,
-    # )
-    #
-    # test_acc = evaluate(feature_model, probe, test_loader, cfg.device)
-    # print(f"final test_top1={test_acc:.2f}")
+    best_val = train_linear(
+        feature_model,
+        probe,
+        train_loader,
+        val_loader,
+        optimizer,
+        scheduler,
+        cfg.device,
+        cfg.epochs,
+        text_encoder,
+        tokenizer,
+        cfg.text_device,
+        vae,
+        vae_scale,
+        cfg.patch_size,
+        cfg.t_value,
+        cfg.text_prompt,
+        dtype,
+        wandb_run,
+        cfg.log_every,
+        cfg.use_random_inputs,
+        wan.in_dim,
+        wan.text_dim,
+        cfg.text_len,
+    )
 
-    print("Stub created. Fill TODOs for data, VAE encode, text context, and loaders.")
+    test_acc = evaluate(
+        feature_model,
+        probe,
+        test_loader,
+        cfg.device,
+        text_encoder,
+        tokenizer,
+        cfg.text_device,
+        vae,
+        vae_scale,
+        cfg.patch_size,
+        cfg.t_value,
+        cfg.text_prompt,
+        dtype,
+        cfg.use_random_inputs,
+        wan.in_dim,
+        wan.text_dim,
+        cfg.text_len,
+    )
+    print(f"final test_top1={test_acc:.2f} best_val={best_val:.2f}")
 
 
 if __name__ == "__main__":

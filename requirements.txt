@@ -43,11 +43,11 @@ matplotlib==3.8.2
 plotly==5.18.0
 
 # Dataset Dependencies
-tensorflow==2.15.0  # For tensorflow-datasets
-tensorflow-datasets==4.9.7
-gcsfs==2024.12.0  # For Google Cloud Storage datasets
-ego4d==1.7.3  # For Ego4D dataset
-ijson==3.3.0  # For streaming JSON parsing
+# tensorflow==2.15.0  # For tensorflow-datasets
+# tensorflow-datasets==4.9.7
+# gcsfs==2024.12.0  # For Google Cloud Storage datasets
+# ego4d==1.7.3  # For Ego4D dataset
+# ijson==3.3.0  # For streaming JSON parsing
 
 # Text Processing and Tokenization
 sentencepiece==0.2.0
