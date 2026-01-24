@@ -1,3 +1,7 @@
 *.ckpt
 data/
 __pycache__/
+*.log
+
+error/
+output/

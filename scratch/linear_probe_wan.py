@@ -402,7 +402,7 @@ def main():
     parser.add_argument("--pipeline-test", action="store_true")
     parser.add_argument("--tiny-model", action="store_true")
     parser.add_argument("--random-inputs", action="store_true")
-    parser.add_argument("--layer-idx", type=int, default=1)
+    parser.add_argument("--layer-idx", type=int, default=20)
     parser.add_argument("--use-mlp", action="store_true")
     parser.add_argument("--subset-name", type=str, default="imagenet-1k")
     parser.add_argument("--data-root", type=str, default="/data/scene-rep/ImageNet1K")

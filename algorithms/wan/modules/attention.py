@@ -1,24 +1,38 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
 
-# try:
-#     import flash_attn_interface
-#     FLASH_ATTN_3_AVAILABLE = True
-# except ModuleNotFoundError:
-FLASH_ATTN_3_AVAILABLE = False
-
-# try:
-#     # import flash_attn
-#     FLASH_ATTN_2_AVAILABLE = True
-# except ModuleNotFoundError:
-FLASH_ATTN_2_AVAILABLE = False
-
 import warnings
 
 __all__ = [
     "flash_attention",
     "attention",
 ]
+
+FLASH_ATTN_3_AVAILABLE = False
+FLASH_ATTN_2_AVAILABLE = False
+
+# FlashAttention is optional. In some environments, the package may be installed
+# but fail to import due to a Torch/CUDA ABI or dynamic linker issue.
+try:
+    import flash_attn_interface  # type: ignore
+
+    print("FlashAttention 3 available")
+    FLASH_ATTN_3_AVAILABLE = True
+except Exception as e:
+    print(e)
+    FLASH_ATTN_3_AVAILABLE = False
+    _flash_attn_3_import_error = e
+
+try:
+    import flash_attn  # type: ignore
+
+    print("FlashAttention 2 available")
+
+    FLASH_ATTN_2_AVAILABLE = True
+except Exception as e:
+    print(e)
+    FLASH_ATTN_2_AVAILABLE = False
+    _flash_attn_2_import_error = e
 
 
 def flash_attention(
