@@ -5,6 +5,7 @@ Provide VAE and text encoder checkpoints via CLI flags.
 """
 
 import argparse
+import gc
 from dataclasses import dataclass
 
 import torch
@@ -218,6 +219,7 @@ def evaluate(
     text_encoder,
     tokenizer,
     text_device,
+    cached_prompt_context,
     vae,
     vae_scale,
     patch_size,
@@ -253,13 +255,16 @@ def evaluate(
         else:
             video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
             x = video_lat
-            context = encode_texts(
-                text_encoder,
-                tokenizer,
-                [text_prompt] * images.size(0),
-                text_device,
-                out_device=device,
-            )
+            if cached_prompt_context is not None:
+                context = [cached_prompt_context for _ in range(images.size(0))]
+            else:
+                context = encode_texts(
+                    text_encoder,
+                    tokenizer,
+                    [text_prompt] * images.size(0),
+                    text_device,
+                    out_device=device,
+                )
         t = build_timesteps(images.size(0), t_value, device)
         seq_len = compute_seq_len(video_lat, patch_size)
         feats = feature_model(x, t, context, seq_len)
@@ -285,6 +290,7 @@ def train_linear(
     text_encoder,
     tokenizer,
     text_device,
+    cached_prompt_context,
     vae,
     vae_scale,
     patch_size,
@@ -316,19 +322,22 @@ def train_linear(
                 images.size(0),
                 in_dim,
                 text_dim,
-                    text_len,
-                    images.shape[2],
-                    images.shape[3],
-                    device,
+                text_len,
+                images.shape[2],
+                images.shape[3],
+                device,
                 dtype,
             )
         else:
             video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
             x = video_lat
-            context = encode_texts(
-                text_encoder,
-                tokenizer,
-                [text_prompt] * images.size(0),
+            if cached_prompt_context is not None:
+                context = [cached_prompt_context for _ in range(images.size(0))]
+            else:
+                context = encode_texts(
+                    text_encoder,
+                    tokenizer,
+                    [text_prompt] * images.size(0),
                     text_device,
                     out_device=device,
                 )
@@ -368,6 +377,7 @@ def train_linear(
             text_encoder,
             tokenizer,
             text_device,
+            cached_prompt_context,
             vae,
             vae_scale,
             patch_size,
@@ -382,7 +392,7 @@ def train_linear(
         best_val = max(best_val, val_acc)
         print(f"epoch {epoch}: val_top1={val_acc:.2f} best={best_val:.2f}")
         log_wandb(
-        wandb_run,
+            wandb_run,
             {
                 "train/loss": train_loss,
                 "val/top1": val_acc,
@@ -455,11 +465,23 @@ def main():
         wandb=WandbConfig(
             enabled=args.wandb,
             project=args.wandb_project,
-            entity=args.wandb_entity,
+            # entity=args.wandb_entity,
             name=args.wandb_name,
             mode=args.wandb_mode,
         ),
         log_every=args.log_every,
+    )
+
+    wandb_run = init_wandb(
+        cfg.wandb,
+        {
+            "ckpt_path": cfg.ckpt_path,
+            "layer_idx": cfg.layer_idx,
+            "subset_name": cfg.subset_name,
+            "batch_size": cfg.batch_size,
+            "t_value": cfg.t_value,
+            "text_prompt": cfg.text_prompt,
+        },
     )
 
     if cfg.pipeline_test:
@@ -512,6 +534,7 @@ def main():
     tokenizer = None
     vae = None
     vae_scale = None
+    cached_prompt_context = None
 
     if not cfg.use_random_inputs:
         if cfg.vae_ckpt_path is None:
@@ -538,25 +561,27 @@ def main():
         text_encoder, tokenizer = setup_text_encoder(text_cfg, dtype=text_dtype)
         vae, vae_scale = setup_vae(vae_cfg, dtype=dtype)
 
+        # The prompt is constant, so we can encode it once and unload the text model.
+        cached_prompt_context = encode_texts(
+            text_encoder,
+            tokenizer,
+            [cfg.text_prompt],
+            cfg.text_device,
+            out_device=cfg.device,
+        )[0].detach()
+        del text_encoder
+        del tokenizer
+        text_encoder = None
+        tokenizer = None
+        gc.collect()
+        if str(cfg.text_device).startswith("cuda"):
+            torch.cuda.empty_cache()
+
     # NOTE: in_dim should be verified by running a real forward pass.
     in_dim = wan.dim
-    probe = LinearProbe(in_dim, cfg.num_classes, use_mlp=cfg.use_mlp).to(
-        cfg.device, dtype=dtype
-    )
+    probe = LinearProbe(in_dim, cfg.num_classes, use_mlp=cfg.use_mlp).to(cfg.device, dtype=dtype)
     optimizer = torch.optim.SGD(probe.parameters(), lr=cfg.lr, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=0.0)
-
-    wandb_run = init_wandb(
-        cfg.wandb,
-        {
-            "ckpt_path": cfg.ckpt_path,
-            "layer_idx": cfg.layer_idx,
-            "subset_name": cfg.subset_name,
-            "batch_size": cfg.batch_size,
-            "t_value": cfg.t_value,
-            "text_prompt": cfg.text_prompt,
-        },
-    )
 
     best_val = train_linear(
         feature_model,
@@ -570,6 +595,7 @@ def main():
         text_encoder,
         tokenizer,
         cfg.text_device,
+        cached_prompt_context,
         vae,
         vae_scale,
         cfg.patch_size,
@@ -592,6 +618,7 @@ def main():
         text_encoder,
         tokenizer,
         cfg.text_device,
+        cached_prompt_context,
         vae,
         vae_scale,
         cfg.patch_size,
