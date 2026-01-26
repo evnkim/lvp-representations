@@ -132,9 +132,9 @@ class ImageNetSubset(BaseRealDataset):
     def __init__(
         self,
         split: str = "train",
-        res=256,
+        res: int | tuple[int, int] = 256,
         subset_name: str = None,
-        crop_res: int = 256,
+        crop_res: int | tuple[int, int] = 256,
         crop_mode: Literal["center", "random"] = "center",
         data_root: str = "data/datasets",
     ):
