@@ -106,6 +106,7 @@ class ProbeConfig:
     epochs: int = 10
     log_every: int = 50
     log_samples: int = 8
+    ckpt_every: int = 2000
     ckpt_dir: str = "checkpoints/linear_probe"
     resume_path: str | None = None
 
@@ -361,6 +362,7 @@ def train_linear(
     text_dim,
     text_len,
     log_samples,
+    ckpt_every,
     ckpt_dir,
     resume_path,
 ):
@@ -380,6 +382,12 @@ def train_linear(
         best_val = float(ckpt.get("best_val", 0.0))
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("global_step", 0))
+    steps_per_epoch = len(train_loader)
+    if steps_per_epoch > 0:
+        interval = min(ckpt_every, steps_per_epoch) if ckpt_every > 0 else steps_per_epoch
+    else:
+        interval = max(ckpt_every, 1)
+    last_val_acc = None
     for epoch in range(start_epoch, epochs):
         running_loss = 0.0
         running_count = 0
@@ -481,55 +489,72 @@ def train_linear(
                     step=global_step,
                 )
             global_step += 1
+            if interval > 0 and (global_step % interval) == 0:
+                train_loss = running_loss / max(running_count, 1)
+                val_acc = evaluate(
+                    feature_model,
+                    probe,
+                    val_loader,
+                    device,
+                    text_encoder,
+                    tokenizer,
+                    text_device,
+                    cached_prompt_context,
+                    vae,
+                    vae_scale,
+                    clip_model,
+                    clip_normalize,
+                    wan_in_dim,
+                    patch_size,
+                    t_value,
+                    text_prompt,
+                    dtype,
+                    use_random_inputs,
+                    in_dim,
+                    text_dim,
+                    text_len,
+                )
+                last_val_acc = val_acc
+                is_best = val_acc > best_val
+                best_val = max(best_val, val_acc)
+                print(
+                    f"epoch {epoch}: step {global_step} val_top1={val_acc:.2f} best={best_val:.2f}"
+                )
+                state = {
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "best_val": best_val,
+                    "probe": probe.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict(),
+                }
+                torch.save(state, os.path.join(ckpt_dir, "last.pt"))
+                if is_best:
+                    torch.save(state, os.path.join(ckpt_dir, "best.pt"))
+                log_wandb(
+                    wandb_run,
+                    {
+                        "train/loss": train_loss,
+                        "val/top1": val_acc,
+                        "lr": optimizer.param_groups[0]["lr"],
+                        "epoch": epoch,
+                    },
+                    step=global_step,
+                )
 
         scheduler.step()
         train_loss = running_loss / max(running_count, 1)
-        val_acc = evaluate(
-            feature_model,
-            probe,
-            val_loader,
-            device,
-            text_encoder,
-            tokenizer,
-            text_device,
-            cached_prompt_context,
-            vae,
-            vae_scale,
-            clip_model,
-            clip_normalize,
-            wan_in_dim,
-            patch_size,
-            t_value,
-            text_prompt,
-            dtype,
-            use_random_inputs,
-            in_dim,
-            text_dim,
-            text_len,
-        )
-        is_best = val_acc > best_val
-        best_val = max(best_val, val_acc)
-        print(f"epoch {epoch}: val_top1={val_acc:.2f} best={best_val:.2f}")
-        state = {
+        log_payload = {
+            "train/loss": train_loss,
+            "lr": optimizer.param_groups[0]["lr"],
             "epoch": epoch,
-            "global_step": global_step,
-            "best_val": best_val,
-            "probe": probe.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
         }
-        torch.save(state, os.path.join(ckpt_dir, "last.pt"))
-        if is_best:
-            torch.save(state, os.path.join(ckpt_dir, "best.pt"))
+        if last_val_acc is not None:
+            log_payload["val/top1"] = last_val_acc
         log_wandb(
             wandb_run,
-            {
-                "train/loss": train_loss,
-                "val/top1": val_acc,
-                "lr": optimizer.param_groups[0]["lr"],
-                "epoch": epoch,
-            },
-            step=epoch,
+            log_payload,
+            step=global_step,
         )
 
     return best_val
@@ -580,6 +605,7 @@ def main():
     parser.add_argument("--wandb-mode", type=str, default="online")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--log-samples", type=int, default=8)
+    parser.add_argument("--ckpt-every", type=int, default=2000)
     parser.add_argument("--ckpt-dir", type=str, default="checkpoints/linear_probe")
     parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
@@ -620,6 +646,7 @@ def main():
         ),
         log_every=args.log_every,
         log_samples=args.log_samples,
+        ckpt_every=args.ckpt_every,
         ckpt_dir=args.ckpt_dir,
         resume_path=args.resume,
     )
@@ -784,6 +811,7 @@ def main():
         wan.text_dim,
         cfg.text_len,
         cfg.log_samples,
+        cfg.ckpt_every,
         cfg.ckpt_dir,
         cfg.resume_path,
     )
