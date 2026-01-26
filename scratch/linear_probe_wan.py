@@ -184,6 +184,7 @@ def build_dataloaders(cfg: ProbeConfig):
         crop_res=(cfg.image_height, cfg.image_width),
         data_root=cfg.data_root,
         crop_mode="random",
+        preserve_aspect=True,
     )
     val_ds = ImageNetSubset(
         split="val",
@@ -192,6 +193,7 @@ def build_dataloaders(cfg: ProbeConfig):
         crop_res=(cfg.image_height, cfg.image_width),
         data_root=cfg.data_root,
         crop_mode="center",
+        preserve_aspect=True,
     )
 
     train_loader = DataLoader(
@@ -468,7 +470,7 @@ def train_linear(
 
             running_loss += loss.item() * labels.size(0)
             running_count += labels.size(0)
-            if log_every > 0 and (global_step % log_every) == 0:
+            if global_step < 100 or (log_every > 0 and (global_step % log_every) == 0):
                 log_wandb(
                     wandb_run,
                     {

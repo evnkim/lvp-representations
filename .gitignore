@@ -7,3 +7,4 @@ error/
 output/
 
 wandb/
+*.pt

@@ -136,6 +136,7 @@ class ImageNetSubset(BaseRealDataset):
         subset_name: str = None,
         crop_res: int | tuple[int, int] = 256,
         crop_mode: Literal["center", "random"] = "center",
+        preserve_aspect: bool = False,
         data_root: str = "data/datasets",
     ):
 
@@ -155,9 +156,14 @@ class ImageNetSubset(BaseRealDataset):
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
+        resize_res = res
+        if preserve_aspect and isinstance(res, tuple) and isinstance(crop_res, tuple):
+            # Use a shorter-side resize to preserve aspect ratio before cropping.
+            resize_res = max(crop_res)
+
         self.transform = transforms.Compose(
             [
-                transforms.Resize(res),
+                transforms.Resize(resize_res),
                 (
                     transforms.CenterCrop(crop_res)
                     if crop_mode == "center"
