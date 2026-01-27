@@ -276,51 +276,51 @@ def evaluate(
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
-    if use_random_inputs:
-        x, context, video_lat = build_random_inputs(
-            images.size(0),
-            in_dim,
-            text_dim,
-            text_len,
-            images.shape[2],
-            images.shape[3],
-            device,
-            dtype,
-        )
-        y = None
-        clip_fea = None
-        t = build_timesteps(images.size(0), t_value, device)
-    else:
-        # i2v: build clip_fea and y from the same input image.
-        if getattr(feature_model.wan, "model_type", None) == "i2v":
-            x, y, clip_fea = compute_i2v_conditioning_from_images(
-                images,
-                vae=vae,
-                vae_scale=vae_scale,
-                clip_model=clip_model,
-                clip_normalize=clip_normalize,
-                device=device,
-                dtype=dtype,
-                wan_in_dim=wan_in_dim,
+        if use_random_inputs:
+            x, context, video_lat = build_random_inputs(
+                images.size(0),
+                in_dim,
+                text_dim,
+                text_len,
+                images.shape[2],
+                images.shape[3],
+                device,
+                dtype,
             )
-            video_lat = x
-        else:
-            video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
-            x = video_lat
             y = None
             clip_fea = None
-        x, t = add_training_noise(video_lat, t_value=t_value)
-        if cached_prompt_context is not None:
-            context = [cached_prompt_context for _ in range(images.size(0))]
+            t = build_timesteps(images.size(0), t_value, device)
         else:
-            context = encode_texts(
-                text_encoder,
-                tokenizer,
-                [text_prompt] * images.size(0),
-                text_device,
-                out_device=device,
-                out_dtype=dtype,
-            )
+            # i2v: build clip_fea and y from the same input image.
+            if getattr(feature_model.wan, "model_type", None) == "i2v":
+                x, y, clip_fea = compute_i2v_conditioning_from_images(
+                    images,
+                    vae=vae,
+                    vae_scale=vae_scale,
+                    clip_model=clip_model,
+                    clip_normalize=clip_normalize,
+                    device=device,
+                    dtype=dtype,
+                    wan_in_dim=wan_in_dim,
+                )
+                video_lat = x
+            else:
+                video_lat = encode_images_to_wan_latents(vae, vae_scale, images, dtype)
+                x = video_lat
+                y = None
+                clip_fea = None
+            x, t = add_training_noise(video_lat, t_value=t_value)
+            if cached_prompt_context is not None:
+                context = [cached_prompt_context for _ in range(images.size(0))]
+            else:
+                context = encode_texts(
+                    text_encoder,
+                    tokenizer,
+                    [text_prompt] * images.size(0),
+                    text_device,
+                    out_device=device,
+                    out_dtype=dtype,
+                )
         seq_len = compute_seq_len(video_lat, patch_size)
         feats = feature_model(x, t, context, seq_len, clip_fea=clip_fea, y=y)
         logits = probe(feats)
@@ -605,6 +605,7 @@ def main():
     parser.add_argument("--wandb-mode", type=str, default="online")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--log-samples", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--ckpt-every", type=int, default=2000)
     parser.add_argument("--ckpt-dir", type=str, default="checkpoints/linear_probe")
     parser.add_argument("--resume", type=str, default=None)
@@ -646,6 +647,7 @@ def main():
         ),
         log_every=args.log_every,
         log_samples=args.log_samples,
+        lr=args.lr,
         ckpt_every=args.ckpt_every,
         ckpt_dir=args.ckpt_dir,
         resume_path=args.resume,

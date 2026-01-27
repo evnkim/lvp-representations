@@ -11,9 +11,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=12G
-#SBATCH --signal=SIGTERM@30
-#SBATCH --requeue
-#SBATCH --open-mode=append
 
 set -euo pipefail
 
@@ -33,12 +30,14 @@ python -m scratch.linear_probe_wan \
   --tuned-ckpt-path data/ckpts/LVP_14B_inference.ckpt \
   --vae-ckpt-path data/ckpts/Wan2.1-I2V-14B-480P/Wan2.1_VAE.pth \
   --text-ckpt-path data/ckpts/Wan2.1-I2V-14B-480P/models_t5_umt5-xxl-enc-bf16.pth \
-  --subset-name imagenet-1k \
+  --subset-name imagenet-100 \
   --data-root /data/scene-rep/ImageNet1K \
   --batch-size 64 \
   --num-workers 16 \
   --text-device cuda \
   --t-value 500 \
   --log-every 50 \
-  --ckpt-dir checkpoints/linear_probe_1k \
+  --lr 0.05 \
+  --ckpt-dir checkpoints/linear_probe_100_0.05 \
+  --wandb-name wan-linear-probe-100-0.05 \
   --wandb
