@@ -109,6 +109,8 @@ class ProbeConfig:
     ckpt_every: int = 2000
     ckpt_dir: str = "checkpoints/linear_probe"
     resume_path: str | None = None
+    eval_only: bool = False
+    eval_ckpt_path: str | None = None
 
 
 class WanFeatureModel(nn.Module):
@@ -380,7 +382,16 @@ def train_linear(
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         best_val = float(ckpt.get("best_val", 0.0))
-        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        epoch = int(ckpt.get("epoch", 0))
+        epoch_completed = ckpt.get("epoch_completed")
+        scheduler_post_step = ckpt.get("scheduler_post_step")
+        if epoch_completed is None:
+            # Legacy checkpoints were saved before scheduler.step() at epoch end.
+            start_epoch = epoch + 1
+            if scheduler_post_step is False or scheduler_post_step is None:
+                scheduler.step()
+        else:
+            start_epoch = epoch + 1 if epoch_completed else epoch
         global_step = int(ckpt.get("global_step", 0))
     steps_per_epoch = len(train_loader)
     if steps_per_epoch > 0:
@@ -527,6 +538,8 @@ def train_linear(
                     "probe": probe.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
+                    "epoch_completed": False,
+                    "scheduler_post_step": False,
                 }
                 torch.save(state, os.path.join(ckpt_dir, "last.pt"))
                 if is_best:
@@ -556,6 +569,17 @@ def train_linear(
             log_payload,
             step=global_step,
         )
+        state = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val": best_val,
+            "probe": probe.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "epoch_completed": True,
+            "scheduler_post_step": True,
+        }
+        torch.save(state, os.path.join(ckpt_dir, "last.pt"))
 
     return best_val
 
@@ -609,6 +633,8 @@ def main():
     parser.add_argument("--ckpt-every", type=int, default=2000)
     parser.add_argument("--ckpt-dir", type=str, default="checkpoints/linear_probe")
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--eval-ckpt-path", type=str, default=None)
     args = parser.parse_args()
 
     cfg = ProbeConfig(
@@ -651,6 +677,8 @@ def main():
         ckpt_every=args.ckpt_every,
         ckpt_dir=args.ckpt_dir,
         resume_path=args.resume,
+        eval_only=args.eval_only,
+        eval_ckpt_path=args.eval_ckpt_path,
     )
 
     wandb_run = init_wandb(
@@ -781,42 +809,55 @@ def main():
     # NOTE: in_dim should be verified by running a real forward pass.
     in_dim = wan.dim
     probe = LinearProbe(in_dim, cfg.num_classes, use_mlp=cfg.use_mlp).to(cfg.device, dtype=dtype)
-    optimizer = torch.optim.SGD(probe.parameters(), lr=cfg.lr, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=0.0)
-
-    best_val = train_linear(
-        feature_model,
-        probe,
-        train_loader,
-        val_loader,
-        optimizer,
-        scheduler,
-        cfg.device,
-        cfg.epochs,
-        text_encoder,
-        tokenizer,
-        cfg.text_device,
-        cached_prompt_context,
-        vae,
-        vae_scale,
-        clip_model,
-        clip_normalize,
-        wan.in_dim,
-        cfg.patch_size,
-        cfg.t_value,
-        cfg.text_prompt,
-        dtype,
-        wandb_run,
-        cfg.log_every,
-        cfg.use_random_inputs,
-        wan.in_dim,
-        wan.text_dim,
-        cfg.text_len,
-        cfg.log_samples,
-        cfg.ckpt_every,
-        cfg.ckpt_dir,
-        cfg.resume_path,
-    )
+    if cfg.eval_only or cfg.eval_ckpt_path:
+        if not cfg.eval_ckpt_path:
+            raise ValueError("Please provide --eval-ckpt-path for eval-only runs.")
+        ckpt = torch.load(cfg.eval_ckpt_path, map_location="cpu")
+        if isinstance(ckpt, dict) and "probe" in ckpt:
+            probe.load_state_dict(ckpt["probe"])
+        elif isinstance(ckpt, dict):
+            probe.load_state_dict(ckpt)
+        else:
+            raise ValueError("Unsupported checkpoint format for --eval-ckpt-path.")
+        best_val = 0.0
+    else:
+        optimizer = torch.optim.SGD(probe.parameters(), lr=cfg.lr, momentum=0.9)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=cfg.epochs, eta_min=0.0
+        )
+        best_val = train_linear(
+            feature_model,
+            probe,
+            train_loader,
+            val_loader,
+            optimizer,
+            scheduler,
+            cfg.device,
+            cfg.epochs,
+            text_encoder,
+            tokenizer,
+            cfg.text_device,
+            cached_prompt_context,
+            vae,
+            vae_scale,
+            clip_model,
+            clip_normalize,
+            wan.in_dim,
+            cfg.patch_size,
+            cfg.t_value,
+            cfg.text_prompt,
+            dtype,
+            wandb_run,
+            cfg.log_every,
+            cfg.use_random_inputs,
+            wan.in_dim,
+            wan.text_dim,
+            cfg.text_len,
+            cfg.log_samples,
+            cfg.ckpt_every,
+            cfg.ckpt_dir,
+            cfg.resume_path,
+        )
 
     test_acc = evaluate(
         feature_model,

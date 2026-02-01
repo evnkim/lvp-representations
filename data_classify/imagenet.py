@@ -188,9 +188,17 @@ class ImageNetSubset(BaseRealDataset):
         self.class_names = [self.full_ds.classes[c][0] for c in self.classes]
 
     def __getitem__(self, index):
-        image, label = self.ds.__getitem__(index)
-        label = self.convert_label(label)
-        return image, label
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                image, label = self.ds.__getitem__(index)
+                label = self.convert_label(label)
+                return image, label
+            except (FileNotFoundError, OSError) as e:
+                # If file is missing, try next index
+                if attempt == max_retries - 1:
+                    raise e
+                index = (index + 1) % len(self.ds)
 
     def __len__(self):
         return len(self.ds)

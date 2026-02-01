@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH --job-name=dec
+#SBATCH --job-name=dec-eval
 #SBATCH --partition=vision-shared-h200,csail-shared-h200
 #SBATCH --qos=shared-if-available
 #SBATCH --account=vision-sitzmann
@@ -24,7 +24,6 @@ source /data/scene-rep/u/evnkim/.bashrc
 source /data/scene-rep/u/evnkim/miniconda3/etc/profile.d/conda.sh
 conda activate lvp2
 
-
 python -m scratch.linear_probe_wan \
   --ckpt-path data/ckpts/Wan2.1-I2V-14B-480P \
   --tuned-ckpt-path data/ckpts/LVP_14B_inference.ckpt \
@@ -36,10 +35,5 @@ python -m scratch.linear_probe_wan \
   --num-workers 16 \
   --text-device cuda \
   --t-value 500 \
-  --log-every 50 \
-  --lr 0.05 \
-  --layer-idx 25 \
-  --ckpt-dir checkpoints/linear_probe_100_0.05_t500_i25 \
-  --resume checkpoints/linear_probe_100_0.05_t500_i25/last.pt \
-  --wandb-name wan-linear-probe-100-0.05-t500-i25 \
-  --wandb
+  --eval-only \
+  --eval-ckpt-path checkpoints/linear_probe_100_0.05/last.pt
